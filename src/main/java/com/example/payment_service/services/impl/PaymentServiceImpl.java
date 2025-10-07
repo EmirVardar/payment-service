@@ -24,6 +24,9 @@ public class PaymentServiceImpl implements PaymentService {
 
     private final WebClient sipayClient;
     private final TokenService tokenService;
+    private final com.example.payment_service.security.CurrentUser currentUser;
+    private final com.example.payment_service.repos.UserRepository userRepo;
+    private final com.example.payment_service.repos.TransactionRepository txRepo;
 
     @Value("${sipay.app-secret}")   private String appSecret;
     @Value("${sipay.merchant-key}") private String merchantKey;
@@ -36,46 +39,54 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     public String start3DPayment(DirectPaymentRequest r) {
-        // 1) Token al
-        TokenResponse tokenResp = tokenService.getToken();
-        String token = tokenResp.data() != null ? tokenResp.data().token() : null;
-        if (token == null || token.isBlank()) {
-            throw new PaymentRequestException("Token alınamadı ya da boş döndü");
-        }
+        // 0) İstek yapan kullanıcı
+        Long userId = currentUser.get();                     // JwtAuthFilter set ediyor
+        var user = userRepo.findById(userId)
+                .orElseThrow(() -> new IllegalStateException("User not found"));
 
-        // 2) Tutar/hesaplamalar
-        BigDecimal total = BigDecimal.valueOf(r.total());
-        String totalStr = twoDecimals(total);
+        // 1) Token al (mevcut)
+        var tokenResp = tokenService.getToken();
+        var token = tokenResp.data() != null ? tokenResp.data().token() : null;
+        if (token == null || token.isBlank()) throw new PaymentRequestException("Token alınamadı");
+
+        // 2) Tutar/format (mevcut)
+        var total = new java.math.BigDecimal(String.valueOf(r.total()));
+        var totalStr = twoDecimals(total);
         int installment = r.installmentsNumber();
 
-        // 3) Hash üret
-        String hashKey = generateHashKey(
-                totalStr,
-                installment,
-                r.currencyCode(),
-                merchantKey,
-                r.invoiceId(),
-                appSecret
-        );
+        // 3) Hash (mevcut)
+        String hashKey = generateHashKey(totalStr, installment, r.currencyCode(),
+                merchantKey, r.invoiceId(), appSecret);
 
-        // 4) Formu tek satırda hazırla (DTO -> form-urlencoded)
-        MultiValueMap<String, String> form =
-                toForm(r, merchantKey, totalStr, installment, hashKey);
+        // 3.5) PENDING Transaction (yoksa) — orderId henüz bilinmiyor
+        if (!txRepo.existsByInvoiceId(r.invoiceId())) {
+            var tx = com.example.payment_service.entities.Transaction.builder()
+                    .invoiceId(r.invoiceId())
+                    .orderId(null)                     // callback’te dolacak
+                    .status("PENDING")
+                    .amount(total)
+                    .installment(installment)
+                    .currencyCode(r.currencyCode())
+                    .user(user)                        // 🔗 kullanıcıyı bağladık
+                    .build();
+            txRepo.save(tx);
+        }
 
-        // 5) İstek at + hata yakalama
+        // 4) Formu hazırla + isteği at (mevcut)
+        var form = com.example.payment_service.util.PaymentFormUtil
+                .toForm(r, merchantKey, totalStr, installment, hashKey);
+
         return sipayClient.post()
                 .uri("/api/paySmart3D")
-                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                .accept(MediaType.TEXT_HTML)
+                .contentType(org.springframework.http.MediaType.APPLICATION_FORM_URLENCODED)
+                .accept(org.springframework.http.MediaType.TEXT_HTML)
                 .headers(h -> h.setBearerAuth(token))
                 .bodyValue(form)
                 .retrieve()
-                .onStatus(
-                        status -> status.is4xxClientError() || status.is5xxServerError(),
+                .onStatus(st -> st.is4xxClientError() || st.is5xxServerError(),
                         resp -> resp.bodyToMono(String.class)
-                                .map(body -> new PaymentRequestException(
-                                        "paySmart3D çağrısı başarısız: " + resp.statusCode() + " - " + body))
-                )
+                                .map(b -> new PaymentRequestException("paySmart3D hata: "
+                                        + resp.statusCode() + " - " + b)))
                 .bodyToMono(String.class)
                 .block();
     }

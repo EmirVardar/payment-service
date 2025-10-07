@@ -23,13 +23,29 @@ public class PaymentCallbackServiceImpl implements PaymentCallbackService {
         boolean ok = "1".equals(form.md_status());
         String orderId = form.order_id();
 
-        // idempotency: aynı order_id geldiyse tekrar kaydetme
+        // Zaten işlendi mi? (orderId bazlı)
         if (orderId != null && txRepo.existsByOrderId(orderId)) {
-            log.info("Return callback ignored (already processed). orderId={}", orderId);
             return ok ? "PAYMENT_OK" : "PAYMENT_NOT_OK";
         }
 
-        Transaction tx = Transaction.builder()
+        // Önceden açılmış PENDING var mı? (invoiceId bazlı)
+        var existing = txRepo.findByInvoiceId(form.invoice_id()).orElse(null);
+        if (existing != null) {
+            existing.setOrderId(orderId);
+            existing.setStatus(ok ? "SUCCESS" : "FAILED");
+            existing.setAmount(toBigDecimal(form.amount()));
+            existing.setInstallment(toInteger(form.installment()));
+            existing.setAuthCode(form.auth_code());
+            existing.setProviderStatusCode(form.status_code());
+            existing.setProviderStatusDescription(form.status_description());
+            existing.setErrorMessage(form.error());
+            existing.setRawPayload(form.toString());
+            txRepo.save(existing);
+            return ok ? "PAYMENT_OK" : "PAYMENT_NOT_OK";
+        }
+
+        // Hiç yoksa (edge case) → yeni oluştur (user null kalabilir)
+        var tx = Transaction.builder()
                 .invoiceId(form.invoice_id())
                 .orderId(orderId)
                 .status(ok ? "SUCCESS" : "FAILED")
@@ -39,11 +55,9 @@ public class PaymentCallbackServiceImpl implements PaymentCallbackService {
                 .providerStatusCode(form.status_code())
                 .providerStatusDescription(form.status_description())
                 .errorMessage(form.error())
-                .rawPayload(form.toString()) // istersen kaldır
+                .rawPayload(form.toString())
                 .build();
-
         txRepo.save(tx);
-        log.info("Transaction saved (return). orderId={} status={}", orderId, tx.getStatus());
         return ok ? "PAYMENT_OK" : "PAYMENT_NOT_OK";
     }
 
@@ -52,11 +66,24 @@ public class PaymentCallbackServiceImpl implements PaymentCallbackService {
         String orderId = form.order_id();
 
         if (orderId != null && txRepo.existsByOrderId(orderId)) {
-            log.info("Cancel callback ignored (already processed). orderId={}", orderId);
             return "PAYMENT_CANCELLED";
         }
 
-        Transaction tx = Transaction.builder()
+        var existing = txRepo.findByInvoiceId(form.invoice_id()).orElse(null);
+        if (existing != null) {
+            existing.setOrderId(orderId);
+            existing.setStatus("CANCELLED");
+            existing.setAmount(toBigDecimal(form.amount()));
+            existing.setInstallment(toInteger(form.installment()));
+            existing.setProviderStatusCode(form.status_code());
+            existing.setProviderStatusDescription(form.status_description());
+            existing.setErrorMessage(form.error());
+            existing.setRawPayload(form.toString());
+            txRepo.save(existing);
+            return "PAYMENT_CANCELLED";
+        }
+
+        var tx = Transaction.builder()
                 .invoiceId(form.invoice_id())
                 .orderId(orderId)
                 .status("CANCELLED")
@@ -67,9 +94,7 @@ public class PaymentCallbackServiceImpl implements PaymentCallbackService {
                 .errorMessage(form.error())
                 .rawPayload(form.toString())
                 .build();
-
         txRepo.save(tx);
-        log.info("Transaction saved (cancel). orderId={} status=CANCELLED", orderId);
         return "PAYMENT_CANCELLED";
     }
 

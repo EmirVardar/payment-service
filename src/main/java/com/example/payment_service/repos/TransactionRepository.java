@@ -8,4 +8,7 @@ import java.util.Optional;
 public interface TransactionRepository extends JpaRepository<Transaction, Long> {
     boolean existsByOrderId(String orderId);
     Optional<Transaction> findByOrderId(String orderId);
+    boolean existsByInvoiceId(String invoiceId);
+    java.util.Optional<Transaction> findByInvoiceId(String invoiceId);
+
 }

@@ -28,7 +28,7 @@ public class Transaction {
     @Column(name = "invoice_id", nullable = false, length = 64)
     private String invoiceId;
 
-    @Column(name = "order_id", nullable = false, length = 64)
+    @Column(name = "order_id", nullable = true, length = 64)
     private String orderId;
 
     @Column(name = "status", nullable = false, length = 16)
@@ -54,6 +54,10 @@ public class Transaction {
 
     @Column(name = "error_message", length = 512)
     private String errorMessage;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    private User user;
 
     // Debug / denetim için tüm gelen formu saklamak istersen
     @Lob
